@@ -1,0 +1,4 @@
+# Known IP addresses - one per line
+# IPs listed here are treated as trusted (ip_known = True)
+# Unknown IPs contribute +3 to the risk score
+127.0.0.1

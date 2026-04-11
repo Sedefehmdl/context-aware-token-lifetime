@@ -1,0 +1,4 @@
+oslo.utils>=7.0.0
+oslo.config>=9.0.0
+PyJWT>=2.7.0
+requests>=2.31.0
