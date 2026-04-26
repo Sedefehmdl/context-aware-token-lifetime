@@ -3,16 +3,29 @@ import logging
 import os
 from oslo_utils import timeutils
 
-LOG_FILE = '/var/log/keystone/dynamic_lifetime.log'
-
 logger = logging.getLogger('dynamic_lifetime')
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    handler = logging.FileHandler(LOG_FILE)
-    handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
-    logger.addHandler(handler)
+    fh = logging.FileHandler('/var/log/keystone/dynamic_lifetime.log')
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+    logger.addHandler(fh)
 
-KNOWN_IPS = {'127.0.0.1', '10.0.2.2', '10.0.2.15'}
+KNOWN_IPS_FILE = '/etc/keystone/known_ips.txt'
+
+def load_known_ips():
+    if not os.path.exists(KNOWN_IPS_FILE):
+        return set()
+    with open(KNOWN_IPS_FILE, 'r') as f:
+        return set(line.strip() for line in f if line.strip())
+
+def check_ip(ip):
+    known = load_known_ips()
+    if ip not in known:
+        with open(KNOWN_IPS_FILE, 'a') as f:
+            f.write(ip + '\n')
+        return False
+    return True
 
 def compute_risk_score(ip_known, off_hours, failed_logins, mfa_used):
     score = 0
@@ -38,24 +51,32 @@ def patched_default_expire_time():
     try:
         hour = datetime.datetime.utcnow().hour
         off_hours = hour < 6 or hour >= 20
-        ip_known = True
+
+        try:
+            from flask import request
+            ip = request.environ.get('HTTP_X_FORWARDED_FOR',
+                 request.environ.get('REMOTE_ADDR', '0.0.0.0'))
+        except Exception:
+            ip = '0.0.0.0'
+
+        ip_known = check_ip(ip)
         failed_logins = 0
         mfa_used = True
 
-        score = compute_risk_score(ip_known, off_hours, failed_logins, mfa_used)
+        score = compute_risk_score(ip_known, off_hours,
+                                   failed_logins, mfa_used)
         seconds = get_dynamic_lifetime(score)
 
         logger.info(
-            f"TOKEN ISSUED | ip_known={ip_known} | off_hours={off_hours} | "
-            f"failed_logins={failed_logins} | mfa_used={mfa_used} | "
-            f"score={score} | lifetime={seconds}s"
+            "TOKEN ISSUED | ip=%s | ip_known=%s | off_hours=%s | "
+            "failed_logins=%s | mfa_used=%s | score=%s | lifetime=%ss"
+            % (ip, ip_known, off_hours, failed_logins,
+               mfa_used, score, seconds)
         )
-
-        expire_delta = datetime.timedelta(seconds=seconds)
-        return timeutils.utcnow() + expire_delta
+        return timeutils.utcnow() + datetime.timedelta(seconds=seconds)
 
     except Exception as e:
-        logger.error(f"Patch error: {e}, falling back to 3600s")
+        logger.error("Patch error: %s, falling back to 3600s" % e)
         return timeutils.utcnow() + datetime.timedelta(seconds=3600)
 
 import keystone.token.provider as _provider
